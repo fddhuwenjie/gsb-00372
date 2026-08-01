@@ -1,14 +1,44 @@
 import { create } from 'zustand';
+import { v4 as uuidv4 } from 'uuid';
 import type { 
   TableMetadata, TableNode, Join, SelectedField, WhereCondition, 
   Aggregation, QueryStructure, QueryResult, GeneratedSQL, WhereClause,
-  CTE, TabType, ResultViewMode, ChartConfig, SavedQuery, QueryHistoryItem, ExplainResult
+  CTE, TabType, ResultViewMode, ChartConfig, SavedQuery, QueryHistoryItem, ExplainResult,
+  QueryTemplate, TemplateParameter
 } from '@/types';
 import { 
   generateSQL, executeQuery, getSavedQueries, createSavedQuery, 
   updateSavedQuery, deleteSavedQuery, shareQuery, getQueryHistory,
-  explainQuery
+  explainQuery, getTemplates, createTemplate, deleteTemplate, instantiateTemplate
 } from '@/services/api';
+import { deriveParameters } from '@/lib/templateParams';
+
+/**
+ * Create a new canvas table instance with a stable unique id and a
+ * deterministic, collision-free alias. Self-joins of the same table get
+ * distinct aliases (cu, cu2, ...), and prefixes shared by different tables
+ * (order / order_item) are disambiguated the same way.
+ */
+export function createTableInstance(
+  tableName: string,
+  position: { x: number; y: number },
+  existingTables: TableNode[]
+): TableNode {
+  const base = tableName.substring(0, 2).toLowerCase();
+  const usedAliases = new Set(existingTables.map((t) => t.alias));
+  let alias = base;
+  let n = 2;
+  while (usedAliases.has(alias)) {
+    alias = `${base}${n}`;
+    n += 1;
+  }
+  return {
+    id: `node-${uuidv4().slice(0, 8)}`,
+    tableName,
+    alias,
+    position,
+  };
+}
 
 interface QueryState {
   metadata: TableMetadata[];
@@ -16,8 +46,10 @@ interface QueryState {
   joins: Join[];
   selectedFields: SelectedField[];
   where: WhereCondition | null;
+  having: WhereCondition | null;
   aggregations: Aggregation[];
   limit: number;
+  offset: number;
   ctes: CTE[];
   generatedSQL: GeneratedSQL | null;
   queryResult: QueryResult | null;
@@ -30,6 +62,8 @@ interface QueryState {
   chartConfig: ChartConfig | null;
   savedQueries: SavedQuery[];
   queryHistory: QueryHistoryItem[];
+  templates: QueryTemplate[];
+  isLoadingTemplates: boolean;
   explainResult: ExplainResult | null;
   isExplaining: boolean;
   isLoadingSaved: boolean;
@@ -45,11 +79,13 @@ interface QueryState {
   updateJoinType: (joinId: string, type: Join['type']) => void;
   toggleField: (tableId: string, columnName: string, selected: boolean) => void;
   setWhere: (where: WhereCondition | null) => void;
+  setHaving: (having: WhereCondition | null) => void;
   addWhereClause: (clause: WhereClause) => void;
   removeWhereClause: (clauseId: string) => void;
   addAggregation: (agg: Aggregation) => void;
   removeAggregation: (tableId: string, columnName: string) => void;
   setLimit: (limit: number) => void;
+  setOffset: (offset: number) => void;
   generateSQL: () => Promise<void>;
   executeQuery: () => Promise<void>;
   clearAll: () => void;
@@ -76,12 +112,63 @@ interface QueryState {
   runExplain: () => Promise<void>;
   
   loadQueryStructure: (structure: QueryStructure) => void;
-  
+
   getQueryStructure: () => QueryStructure;
+
+  loadTemplates: () => Promise<void>;
+  saveAsTemplate: (name: string, description?: string) => Promise<QueryTemplate>;
+  removeTemplate: (id: number) => Promise<void>;
+  instantiateTemplate: (id: number, values: Record<string, unknown>) => Promise<void>;
 }
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 11);
+}
+
+/**
+ * The one and only AST assembly point. The backend owns all SQL semantics;
+ * the frontend only ships this structure.
+ */
+function buildQueryStructure(state: {
+  tables: TableNode[];
+  joins: Join[];
+  selectedFields: SelectedField[];
+  where: WhereCondition | null;
+  having: WhereCondition | null;
+  aggregations: Aggregation[];
+  limit: number;
+  offset: number;
+  ctes: CTE[];
+}): QueryStructure {
+  return {
+    tables: state.tables,
+    joins: state.joins,
+    selectedFields: state.selectedFields,
+    where: state.where,
+    having: state.having,
+    aggregations: state.aggregations,
+    limit: state.limit,
+    offset: state.offset,
+    ctes: state.ctes.length > 0 ? state.ctes : undefined,
+  };
+}
+
+/**
+ * Normalize an AST coming back from storage or a share link. Stable table
+ * instance ids and aliases are preserved verbatim.
+ */
+function restoredState(structure: QueryStructure) {
+  return {
+    tables: structure.tables || [],
+    joins: structure.joins || [],
+    selectedFields: structure.selectedFields || [],
+    where: structure.where || null,
+    having: structure.having || null,
+    aggregations: structure.aggregations || [],
+    limit: structure.limit || 100,
+    offset: structure.offset ?? 0,
+    ctes: structure.ctes || [],
+  };
 }
 
 function removeWhereNode(condition: WhereCondition, nodeId: string): WhereCondition | null {
@@ -171,8 +258,10 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   joins: [],
   selectedFields: [],
   where: null,
+  having: null,
   aggregations: [],
   limit: 100,
+  offset: 0,
   ctes: [],
   generatedSQL: null,
   queryResult: null,
@@ -185,6 +274,8 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   chartConfig: null,
   savedQueries: [],
   queryHistory: [],
+  templates: [],
+  isLoadingTemplates: false,
   explainResult: null,
   isExplaining: false,
   isLoadingSaved: false,
@@ -269,6 +360,8 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
   setWhere: (where) => set({ where }),
 
+  setHaving: (having) => set({ having }),
+
   addWhereClause: (clause) => set((state) => {
     if (!state.where) {
       return {
@@ -325,6 +418,8 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
   setLimit: (limit) => set({ limit }),
 
+  setOffset: (offset) => set({ offset }),
+
   generateSQL: async () => {
     const state = get();
     if (state.tables.length === 0) {
@@ -334,16 +429,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
     set({ isGenerating: true, error: null });
     try {
-      const queryStructure: QueryStructure = {
-        tables: state.tables,
-        joins: state.joins,
-        selectedFields: state.selectedFields,
-        where: state.where,
-        aggregations: state.aggregations,
-        limit: state.limit,
-        ctes: state.ctes.length > 0 ? state.ctes : undefined,
-      };
-      const result = await generateSQL(queryStructure);
+      const result = await generateSQL(buildQueryStructure(state));
       set({ generatedSQL: result, isGenerating: false });
     } catch (err) {
       set({ 
@@ -363,16 +449,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
     set({ isExecuting: true, error: null });
     try {
-      const queryStructure: QueryStructure = {
-        tables: state.tables,
-        joins: state.joins,
-        selectedFields: state.selectedFields,
-        where: state.where,
-        aggregations: state.aggregations,
-        limit: state.limit,
-        ctes: state.ctes.length > 0 ? state.ctes : undefined,
-      };
-      const result = await executeQuery(queryStructure);
+      const result = await executeQuery(buildQueryStructure(state));
       set({ queryResult: result, isExecuting: false });
     } catch (err) {
       set({ 
@@ -389,7 +466,10 @@ export const useQueryStore = create<QueryState>((set, get) => ({
       joins: [],
       selectedFields: [],
       where: null,
+      having: null,
       aggregations: [],
+      limit: 100,
+      offset: 0,
       ctes: [],
       generatedSQL: null,
       queryResult: null,
@@ -448,19 +528,10 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
   saveQuery: async (name, description) => {
     const state = get();
-    const queryStructure: QueryStructure = {
-      tables: state.tables,
-      joins: state.joins,
-      selectedFields: state.selectedFields,
-      where: state.where,
-      aggregations: state.aggregations,
-      limit: state.limit,
-      ctes: state.ctes.length > 0 ? state.ctes : undefined,
-    };
     const saved = await createSavedQuery({
       name,
       description,
-      query_structure: queryStructure,
+      query_structure: buildQueryStructure(state),
       chart_config: state.chartConfig || undefined,
     });
     set({ currentSavedId: saved.id });
@@ -472,17 +543,8 @@ export const useQueryStore = create<QueryState>((set, get) => ({
     const state = get();
     if (!state.currentSavedId) return null;
     
-    const queryStructure: QueryStructure = {
-      tables: state.tables,
-      joins: state.joins,
-      selectedFields: state.selectedFields,
-      where: state.where,
-      aggregations: state.aggregations,
-      limit: state.limit,
-      ctes: state.ctes.length > 0 ? state.ctes : undefined,
-    };
     const updated = await updateSavedQuery(state.currentSavedId, {
-      query_structure: queryStructure,
+      query_structure: buildQueryStructure(state),
       chart_config: state.chartConfig || undefined,
     });
     get().loadSavedQueries();
@@ -498,15 +560,8 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   },
 
   loadQuery: (query) => {
-    const structure = query.query_structure;
     set({
-      tables: structure.tables || [],
-      joins: structure.joins || [],
-      selectedFields: structure.selectedFields || [],
-      where: structure.where || null,
-      aggregations: structure.aggregations || [],
-      limit: structure.limit || 100,
-      ctes: structure.ctes || [],
+      ...restoredState(query.query_structure),
       chartConfig: query.chart_config || null,
       currentSavedId: query.id,
       queryResult: null,
@@ -535,15 +590,8 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   },
 
   replayHistory: (item) => {
-    const structure = item.query_structure;
     set({
-      tables: structure.tables || [],
-      joins: structure.joins || [],
-      selectedFields: structure.selectedFields || [],
-      where: structure.where || null,
-      aggregations: structure.aggregations || [],
-      limit: structure.limit || 100,
-      ctes: structure.ctes || [],
+      ...restoredState(item.query_structure),
       currentSavedId: null,
       queryResult: null,
       generatedSQL: null,
@@ -561,16 +609,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
     set({ isExplaining: true, error: null });
     try {
-      const queryStructure: QueryStructure = {
-        tables: state.tables,
-        joins: state.joins,
-        selectedFields: state.selectedFields,
-        where: state.where,
-        aggregations: state.aggregations,
-        limit: state.limit,
-        ctes: state.ctes.length > 0 ? state.ctes : undefined,
-      };
-      const result = await explainQuery(queryStructure);
+      const result = await explainQuery(buildQueryStructure(state));
       set({ explainResult: result, isExplaining: false, activeTab: 'plan' });
     } catch (err) {
       set({ 
@@ -582,13 +621,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
   loadQueryStructure: (structure) => {
     set({
-      tables: structure.tables || [],
-      joins: structure.joins || [],
-      selectedFields: structure.selectedFields || [],
-      where: structure.where || null,
-      aggregations: structure.aggregations || [],
-      limit: structure.limit || 100,
-      ctes: structure.ctes || [],
+      ...restoredState(structure),
       currentSavedId: null,
       queryResult: null,
       generatedSQL: null,
@@ -597,15 +630,52 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   },
 
   getQueryStructure: () => {
+    return buildQueryStructure(get());
+  },
+
+  loadTemplates: async () => {
+    set({ isLoadingTemplates: true });
+    try {
+      const templates = await getTemplates();
+      set({ templates, isLoadingTemplates: false });
+    } catch (err) {
+      set({
+        error: err instanceof Error ? err.message : 'Failed to load templates',
+        isLoadingTemplates: false,
+      });
+    }
+  },
+
+  saveAsTemplate: async (name, description) => {
     const state = get();
-    return {
-      tables: state.tables,
-      joins: state.joins,
-      selectedFields: state.selectedFields,
-      where: state.where,
-      aggregations: state.aggregations,
-      limit: state.limit,
-      ctes: state.ctes.length > 0 ? state.ctes : undefined,
-    };
+    const structure = buildQueryStructure(state);
+    const parameters: TemplateParameter[] = deriveParameters(structure, state.metadata);
+    const template = await createTemplate({
+      name,
+      description,
+      parameters,
+      query_structure: structure,
+    });
+    get().loadTemplates();
+    return template;
+  },
+
+  removeTemplate: async (id) => {
+    await deleteTemplate(id);
+    get().loadTemplates();
+  },
+
+  instantiateTemplate: async (id, values) => {
+    // Instantiation happens entirely on the backend; the returned AST is
+    // loaded onto the canvas and its executed result is displayed.
+    const result = await instantiateTemplate(id, values, true);
+    get().loadQueryStructure(result.query_structure);
+    set({
+      queryResult: result.result ?? null,
+      generatedSQL: { sql: result.sql, params: result.params },
+      currentSavedId: null,
+      activeTab: 'result',
+      error: null,
+    });
   },
 }));

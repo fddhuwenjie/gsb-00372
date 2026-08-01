@@ -13,9 +13,9 @@ import ReactFlow, {
   BackgroundVariant,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { useQueryStore } from '@/store/queryStore';
+import { useQueryStore, createTableInstance } from '@/store/queryStore';
 import TableNode from './TableNode';
-import type { TableNode as TableNodeType, Join } from '@/types';
+import type { Join } from '@/types';
 
 const nodeTypes: NodeTypes = {
   table: TableNode,
@@ -24,19 +24,6 @@ const nodeTypes: NodeTypes = {
 interface QueryCanvasProps {
   onDrop: (e: React.DragEvent) => void;
   onDragOver: (e: React.DragEvent) => void;
-}
-
-let nodeId = 0;
-let aliasCounter: Record<string, number> = {};
-
-function getAlias(tableName: string): string {
-  if (!aliasCounter[tableName]) {
-    aliasCounter[tableName] = 0;
-  }
-  aliasCounter[tableName]++;
-  const count = aliasCounter[tableName];
-  const base = tableName.substring(0, 2).toLowerCase();
-  return count > 1 ? `${base}${count}` : base;
 }
 
 export default function QueryCanvas({ onDrop, onDragOver }: QueryCanvasProps) {
@@ -172,13 +159,7 @@ export default function QueryCanvas({ onDrop, onDragOver }: QueryCanvasProps) {
         y: e.clientY - reactFlowBounds.top - 50,
       };
 
-      nodeId++;
-      const newTable: TableNodeType = {
-        id: `node-${nodeId}`,
-        tableName,
-        alias: getAlias(tableName),
-        position,
-      };
+      const newTable = createTableInstance(tableName, position, tables);
 
       addTable(newTable);
 
@@ -195,7 +176,7 @@ export default function QueryCanvas({ onDrop, onDragOver }: QueryCanvasProps) {
       setNodes((nds) => [...nds, newNode]);
       onDrop(e);
     },
-    [addTable, setNodes, onDrop]
+    [addTable, setNodes, onDrop, tables]
   );
 
   const handleEdgeClick = useCallback(

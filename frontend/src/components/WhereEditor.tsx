@@ -7,8 +7,14 @@ import type {
 } from '@/types';
 import { isWhereCondition, isWhereClause } from '@/types';
 
-const OPERATORS: ComparisonOperator[] = ['=', '!=', '>', '<', '>=', '<=', 'LIKE', 'IN', 'NOT IN', 'EXISTS', 'NOT EXISTS'];
+const OPERATORS: ComparisonOperator[] = [
+  '=', '!=', '>', '<', '>=', '<=',
+  'LIKE', 'IN', 'NOT IN',
+  'IS NULL', 'IS NOT NULL',
+  'EXISTS', 'NOT EXISTS',
+];
 const SUBQUERY_OPERATORS: ComparisonOperator[] = ['IN', 'NOT IN', 'EXISTS', 'NOT EXISTS'];
+const NULL_OPERATORS: ComparisonOperator[] = ['IS NULL', 'IS NOT NULL'];
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 11);
@@ -50,12 +56,13 @@ function WhereNodeEditor({ node, path, tables, onUpdate, onRemove }: WhereNodeEd
           <select
             value={node.op}
             onChange={(e) =>
-              onUpdate(path, { ...node, op: e.target.value as 'AND' | 'OR' })
+              onUpdate(path, { ...node, op: e.target.value as 'AND' | 'OR' | 'NOT' })
             }
             className="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-sm text-dark-200 focus:outline-none focus:border-primary-500"
           >
             <option value="AND">AND</option>
             <option value="OR">OR</option>
+            <option value="NOT">NOT</option>
           </select>
           <span className="text-xs text-dark-400">Group</span>
           <button
@@ -126,6 +133,7 @@ function WhereNodeEditor({ node, path, tables, onUpdate, onRemove }: WhereNodeEd
       (c) => c.tableId === node.tableId && c.columnName === node.columnName
     );
     const isSubqueryOp = SUBQUERY_OPERATORS.includes(node.cmp);
+    const isNullOp = NULL_OPERATORS.includes(node.cmp);
     const hasSubquery = node.subquery !== undefined;
 
     return (
@@ -169,6 +177,9 @@ function WhereNodeEditor({ node, path, tables, onUpdate, onRemove }: WhereNodeEd
               if (!SUBQUERY_OPERATORS.includes(newCmp)) {
                 delete newNode.subquery;
               }
+              if (NULL_OPERATORS.includes(newCmp)) {
+                delete newNode.value;
+              }
               onUpdate(path, newNode);
             }}
             className="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-sm text-dark-200 focus:outline-none focus:border-primary-500"
@@ -208,10 +219,14 @@ function WhereNodeEditor({ node, path, tables, onUpdate, onRemove }: WhereNodeEd
               {hasSubquery ? 'Edit Subquery' : 'Use Subquery'}
             </button>
           )}
-          {!isSubqueryOp ? (
+          {isNullOp ? (
+            <span className="flex-1 text-xs text-dark-500 px-2 py-1">
+              No value needed
+            </span>
+          ) : !isSubqueryOp ? (
             <input
               type="text"
-              value={String(node.value)}
+              value={String(node.value ?? '')}
               placeholder="value"
               onChange={(e) => {
                 let value: string | number = e.target.value;
