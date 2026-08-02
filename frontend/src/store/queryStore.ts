@@ -2,22 +2,27 @@ import { create } from 'zustand';
 import type { 
   TableMetadata, TableNode, Join, SelectedField, WhereCondition, 
   Aggregation, QueryStructure, QueryResult, GeneratedSQL, WhereClause,
-  CTE, TabType, ResultViewMode, ChartConfig, SavedQuery, QueryHistoryItem, ExplainResult
+  CTE, TabType, ResultViewMode, ChartConfig, SavedQuery, QueryHistoryItem, ExplainResult,
+  OrderByField, WhereNode,
 } from '@/types';
 import { 
   generateSQL, executeQuery, getSavedQueries, createSavedQuery, 
   updateSavedQuery, deleteSavedQuery, shareQuery, getQueryHistory,
   explainQuery
 } from '@/services/api';
+import { normalizeQueryStructure } from '@/lib/ast';
 
 interface QueryState {
   metadata: TableMetadata[];
   tables: TableNode[];
   joins: Join[];
   selectedFields: SelectedField[];
-  where: WhereCondition | null;
+  where: WhereNode | null;
+  having: WhereNode | null;
   aggregations: Aggregation[];
+  orderBy: OrderByField[];
   limit: number;
+  offset: number;
   ctes: CTE[];
   generatedSQL: GeneratedSQL | null;
   queryResult: QueryResult | null;
@@ -44,12 +49,16 @@ interface QueryState {
   removeJoin: (joinId: string) => void;
   updateJoinType: (joinId: string, type: Join['type']) => void;
   toggleField: (tableId: string, columnName: string, selected: boolean) => void;
-  setWhere: (where: WhereCondition | null) => void;
+  setWhere: (where: WhereNode | null) => void;
+  setHaving: (having: WhereNode | null) => void;
   addWhereClause: (clause: WhereClause) => void;
   removeWhereClause: (clauseId: string) => void;
   addAggregation: (agg: Aggregation) => void;
   removeAggregation: (tableId: string, columnName: string) => void;
   setLimit: (limit: number) => void;
+  setOffset: (offset: number) => void;
+  setOrderBy: (orderBy: OrderByField[]) => void;
+  buildQueryStructure: () => QueryStructure;
   generateSQL: () => Promise<void>;
   executeQuery: () => Promise<void>;
   clearAll: () => void;
@@ -171,8 +180,11 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   joins: [],
   selectedFields: [],
   where: null,
+  having: null,
   aggregations: [],
+  orderBy: [],
   limit: 100,
+  offset: 0,
   ctes: [],
   generatedSQL: null,
   queryResult: null,
@@ -269,6 +281,8 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
   setWhere: (where) => set({ where }),
 
+  setHaving: (having) => set({ having }),
+
   addWhereClause: (clause) => set((state) => {
     if (!state.where) {
       return {
@@ -280,24 +294,22 @@ export const useQueryStore = create<QueryState>((set, get) => ({
       };
     }
 
-    const addToCondition = (cond: WhereCondition): WhereCondition => {
-      if (cond.children.length === 0 || !('op' in cond.children[0])) {
-        return {
-          ...cond,
-          children: [...cond.children, clause],
-        };
-      }
-      return cond;
-    };
+    if (!('op' in state.where) || state.where.op === 'NOT' || !('children' in state.where)) {
+      return { where: state.where };
+    }
 
-    return {
-      where: addToCondition(state.where),
-    };
+    const cond = state.where;
+    if (cond.children.length === 0 || !('op' in cond.children[0])) {
+      return {
+        where: { ...cond, children: [...cond.children, clause] },
+      };
+    }
+    return { where: cond };
   }),
 
   removeWhereClause: (clauseId) => set((state) => {
     if (!state.where) return {};
-    const result = removeWhereNode(state.where, clauseId);
+    const result = removeWhereNode(state.where as WhereCondition, clauseId);
     return { where: result };
   }),
 
@@ -325,6 +337,26 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
   setLimit: (limit) => set({ limit }),
 
+  setOffset: (offset) => set({ offset }),
+
+  setOrderBy: (orderBy) => set({ orderBy }),
+
+  buildQueryStructure: (): QueryStructure => {
+    const state = get();
+    return {
+      tables: state.tables,
+      joins: state.joins,
+      selectedFields: state.selectedFields,
+      where: state.where,
+      having: state.having,
+      aggregations: state.aggregations,
+      orderBy: state.orderBy,
+      limit: state.limit,
+      offset: state.offset,
+      ctes: state.ctes.length > 0 ? state.ctes : undefined,
+    };
+  },
+
   generateSQL: async () => {
     const state = get();
     if (state.tables.length === 0) {
@@ -334,15 +366,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
     set({ isGenerating: true, error: null });
     try {
-      const queryStructure: QueryStructure = {
-        tables: state.tables,
-        joins: state.joins,
-        selectedFields: state.selectedFields,
-        where: state.where,
-        aggregations: state.aggregations,
-        limit: state.limit,
-        ctes: state.ctes.length > 0 ? state.ctes : undefined,
-      };
+      const queryStructure = get().buildQueryStructure();
       const result = await generateSQL(queryStructure);
       set({ generatedSQL: result, isGenerating: false });
     } catch (err) {
@@ -363,15 +387,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
     set({ isExecuting: true, error: null });
     try {
-      const queryStructure: QueryStructure = {
-        tables: state.tables,
-        joins: state.joins,
-        selectedFields: state.selectedFields,
-        where: state.where,
-        aggregations: state.aggregations,
-        limit: state.limit,
-        ctes: state.ctes.length > 0 ? state.ctes : undefined,
-      };
+      const queryStructure = get().buildQueryStructure();
       const result = await executeQuery(queryStructure);
       set({ queryResult: result, isExecuting: false });
     } catch (err) {
@@ -389,7 +405,10 @@ export const useQueryStore = create<QueryState>((set, get) => ({
       joins: [],
       selectedFields: [],
       where: null,
+      having: null,
       aggregations: [],
+      orderBy: [],
+      offset: 0,
       ctes: [],
       generatedSQL: null,
       queryResult: null,
@@ -448,15 +467,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
   saveQuery: async (name, description) => {
     const state = get();
-    const queryStructure: QueryStructure = {
-      tables: state.tables,
-      joins: state.joins,
-      selectedFields: state.selectedFields,
-      where: state.where,
-      aggregations: state.aggregations,
-      limit: state.limit,
-      ctes: state.ctes.length > 0 ? state.ctes : undefined,
-    };
+    const queryStructure = state.buildQueryStructure();
     const saved = await createSavedQuery({
       name,
       description,
@@ -472,15 +483,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
     const state = get();
     if (!state.currentSavedId) return null;
     
-    const queryStructure: QueryStructure = {
-      tables: state.tables,
-      joins: state.joins,
-      selectedFields: state.selectedFields,
-      where: state.where,
-      aggregations: state.aggregations,
-      limit: state.limit,
-      ctes: state.ctes.length > 0 ? state.ctes : undefined,
-    };
+    const queryStructure = state.buildQueryStructure();
     const updated = await updateSavedQuery(state.currentSavedId, {
       query_structure: queryStructure,
       chart_config: state.chartConfig || undefined,
@@ -498,14 +501,17 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   },
 
   loadQuery: (query) => {
-    const structure = query.query_structure;
+    const structure = normalizeQueryStructure(query.query_structure);
     set({
-      tables: structure.tables || [],
-      joins: structure.joins || [],
-      selectedFields: structure.selectedFields || [],
-      where: structure.where || null,
-      aggregations: structure.aggregations || [],
-      limit: structure.limit || 100,
+      tables: structure.tables,
+      joins: structure.joins,
+      selectedFields: structure.selectedFields,
+      where: structure.where,
+      having: structure.having ?? null,
+      aggregations: structure.aggregations,
+      orderBy: structure.orderBy ?? [],
+      limit: structure.limit,
+      offset: structure.offset ?? 0,
       ctes: structure.ctes || [],
       chartConfig: query.chart_config || null,
       currentSavedId: query.id,
@@ -535,14 +541,17 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   },
 
   replayHistory: (item) => {
-    const structure = item.query_structure;
+    const structure = normalizeQueryStructure(item.query_structure);
     set({
-      tables: structure.tables || [],
-      joins: structure.joins || [],
-      selectedFields: structure.selectedFields || [],
-      where: structure.where || null,
-      aggregations: structure.aggregations || [],
-      limit: structure.limit || 100,
+      tables: structure.tables,
+      joins: structure.joins,
+      selectedFields: structure.selectedFields,
+      where: structure.where,
+      having: structure.having ?? null,
+      aggregations: structure.aggregations,
+      orderBy: structure.orderBy ?? [],
+      limit: structure.limit,
+      offset: structure.offset ?? 0,
       ctes: structure.ctes || [],
       currentSavedId: null,
       queryResult: null,
@@ -561,15 +570,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
     set({ isExplaining: true, error: null });
     try {
-      const queryStructure: QueryStructure = {
-        tables: state.tables,
-        joins: state.joins,
-        selectedFields: state.selectedFields,
-        where: state.where,
-        aggregations: state.aggregations,
-        limit: state.limit,
-        ctes: state.ctes.length > 0 ? state.ctes : undefined,
-      };
+      const queryStructure = get().buildQueryStructure();
       const result = await explainQuery(queryStructure);
       set({ explainResult: result, isExplaining: false, activeTab: 'plan' });
     } catch (err) {
@@ -581,14 +582,18 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   },
 
   loadQueryStructure: (structure) => {
+    const normalized = normalizeQueryStructure(structure);
     set({
-      tables: structure.tables || [],
-      joins: structure.joins || [],
-      selectedFields: structure.selectedFields || [],
-      where: structure.where || null,
-      aggregations: structure.aggregations || [],
-      limit: structure.limit || 100,
-      ctes: structure.ctes || [],
+      tables: normalized.tables,
+      joins: normalized.joins,
+      selectedFields: normalized.selectedFields,
+      where: normalized.where,
+      having: normalized.having ?? null,
+      aggregations: normalized.aggregations,
+      orderBy: normalized.orderBy ?? [],
+      limit: normalized.limit,
+      offset: normalized.offset ?? 0,
+      ctes: normalized.ctes || [],
       currentSavedId: null,
       queryResult: null,
       generatedSQL: null,
@@ -597,15 +602,6 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   },
 
   getQueryStructure: () => {
-    const state = get();
-    return {
-      tables: state.tables,
-      joins: state.joins,
-      selectedFields: state.selectedFields,
-      where: state.where,
-      aggregations: state.aggregations,
-      limit: state.limit,
-      ctes: state.ctes.length > 0 ? state.ctes : undefined,
-    };
+    return get().buildQueryStructure();
   },
 }));

@@ -3,7 +3,7 @@ import { Link, ChevronDown, Trash2, Plus, Lightbulb } from 'lucide-react';
 import { useQueryStore } from '@/store/queryStore';
 import type { JoinType } from '@/types';
 
-const JOIN_TYPES: JoinType[] = ['INNER', 'LEFT', 'RIGHT', 'FULL'];
+const JOIN_TYPES: JoinType[] = ['INNER', 'LEFT', 'CROSS'];
 
 export default function JoinEditor() {
   const [expanded, setExpanded] = useState(true);
@@ -20,10 +20,8 @@ export default function JoinEditor() {
         return 'Returns rows where both tables have matching values';
       case 'LEFT':
         return 'Returns all rows from left table, matching from right';
-      case 'RIGHT':
-        return 'Returns all rows from right table, matching from left';
-      case 'FULL':
-        return 'Returns all rows from both tables';
+      case 'CROSS':
+        return 'Returns the Cartesian product of both tables';
     }
   };
 
@@ -33,9 +31,7 @@ export default function JoinEditor() {
         return 'bg-primary-900/50 text-primary-300 border-primary-700';
       case 'LEFT':
         return 'bg-emerald-900/50 text-emerald-300 border-emerald-700';
-      case 'RIGHT':
-        return 'bg-amber-900/50 text-amber-300 border-amber-700';
-      case 'FULL':
+      case 'CROSS':
         return 'bg-purple-900/50 text-purple-300 border-purple-700';
     }
   };
@@ -172,17 +168,25 @@ export default function JoinEditor() {
                   </button>
                 </div>
                 <div className="flex items-center gap-2 text-sm">
-                  <span className="font-mono text-primary-400">
-                    {getTableAlias(join.leftTableId)}
-                  </span>
-                  <span className="text-dark-500">.</span>
-                  <span className="font-mono text-dark-200">{join.leftColumn}</span>
-                  <span className="text-dark-400 mx-1">=</span>
-                  <span className="font-mono text-primary-400">
-                    {getTableAlias(join.rightTableId)}
-                  </span>
-                  <span className="text-dark-500">.</span>
-                  <span className="font-mono text-dark-200">{join.rightColumn}</span>
+                  {join.type === 'CROSS' ? (
+                    <span className="font-mono text-dark-400">
+                      {getTableAlias(join.leftTableId)} × {getTableAlias(join.rightTableId)}
+                    </span>
+                  ) : (
+                    <>
+                      <span className="font-mono text-primary-400">
+                        {getTableAlias(join.leftTableId)}
+                      </span>
+                      <span className="text-dark-500">.</span>
+                      <span className="font-mono text-dark-200">{join.leftColumn}</span>
+                      <span className="text-dark-400 mx-1">=</span>
+                      <span className="font-mono text-primary-400">
+                        {getTableAlias(join.rightTableId)}
+                      </span>
+                      <span className="text-dark-500">.</span>
+                      <span className="font-mono text-dark-200">{join.rightColumn}</span>
+                    </>
+                  )}
                 </div>
               </div>
             ))

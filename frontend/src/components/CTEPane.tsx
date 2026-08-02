@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Plus, X, Edit2, Trash2, Code, ChevronDown, ChevronRight } from 'lucide-react';
 import { useQueryStore } from '@/store/queryStore';
-import type { CTE, QueryStructure } from '@/types';
+import type { CTE } from '@/types';
 
 function generateId() {
   return Math.random().toString(36).substring(2, 11);
@@ -27,8 +27,11 @@ export default function CTEPane() {
         joins: [],
         selectedFields: [],
         where: null,
+        having: null,
         aggregations: [],
+        orderBy: [],
         limit: 100,
+        offset: 0,
       },
     };
     addCTE(newCTE);
@@ -53,16 +56,7 @@ export default function CTEPane() {
   };
 
   const handleSaveCurrentAsCTE = () => {
-    const structure: QueryStructure = {
-      tables: useQueryStore.getState().tables,
-      joins: useQueryStore.getState().joins,
-      selectedFields: useQueryStore.getState().selectedFields,
-      where: useQueryStore.getState().where,
-      aggregations: useQueryStore.getState().aggregations,
-      limit: useQueryStore.getState().limit,
-      ctes: undefined,
-    };
-
+    const structure = useQueryStore.getState().getQueryStructure();
     const newCTE: CTE = {
       id: generateId(),
       name: `cte_${ctes.length + 1}`,

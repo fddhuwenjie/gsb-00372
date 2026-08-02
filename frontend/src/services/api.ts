@@ -1,4 +1,4 @@
-import type { TableMetadata, QueryStructure, GeneratedSQL, QueryResult, SavedQuery, QueryHistoryItem, ExplainResult, ShareResult, ChartConfig } from '@/types';
+import type { TableMetadata, QueryStructure, GeneratedSQL, QueryResult, SavedQuery, QueryHistoryItem, ExplainResult, ShareResult, ChartConfig, QueryTemplate, TemplateDefinition, TemplateInstantiateResult, BatchRun, BatchCreateRequest } from '@/types';
 
 const API_BASE = '/api';
 
@@ -169,6 +169,153 @@ export async function getOpenAPI(): Promise<any> {
   const response = await fetch(`${API_BASE}/openapi.json`);
   if (!response.ok) {
     throw new Error('Failed to fetch OpenAPI spec');
+  }
+  return response.json();
+}
+
+// ---------------------------------------------------------------------------
+// Parameterised query templates
+// ---------------------------------------------------------------------------
+export async function listTemplates(): Promise<QueryTemplate[]> {
+  const response = await fetch(`${API_BASE}/templates`);
+  if (!response.ok) throw new Error('Failed to fetch templates');
+  return response.json();
+}
+
+export async function getTemplate(id: number): Promise<QueryTemplate> {
+  const response = await fetch(`${API_BASE}/templates/${id}`);
+  if (!response.ok) throw new Error('Failed to fetch template');
+  return response.json();
+}
+
+export async function createTemplate(definition: TemplateDefinition): Promise<QueryTemplate> {
+  const response = await fetch(`${API_BASE}/templates`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(definition),
+  });
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error || 'Failed to create template');
+  }
+  return response.json();
+}
+
+export async function updateTemplate(id: number, definition: TemplateDefinition): Promise<QueryTemplate> {
+  const response = await fetch(`${API_BASE}/templates/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(definition),
+  });
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error || 'Failed to update template');
+  }
+  return response.json();
+}
+
+export async function deleteTemplate(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/templates/${id}`, { method: 'DELETE' });
+  if (!response.ok) throw new Error('Failed to delete template');
+}
+
+export async function instantiateTemplate(
+  id: number,
+  values: Record<string, any>,
+  execute = true,
+): Promise<TemplateInstantiateResult> {
+  const response = await fetch(`${API_BASE}/templates/${id}/instantiate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values, execute }),
+  });
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error || 'Failed to instantiate template');
+  }
+  return response.json();
+}
+
+export async function validateTemplate(definition: TemplateDefinition): Promise<{ valid: boolean; error?: string; errors?: string[] }> {
+  const response = await fetch(`${API_BASE}/templates/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(definition),
+  });
+  return response.json();
+}
+
+export async function shareTemplate(id: number, expiresInHours?: number): Promise<{ token: string; url: string; expires_at?: string }> {
+  const response = await fetch(`${API_BASE}/templates/${id}/share`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expires_in_hours: expiresInHours }),
+  });
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error || 'Failed to share template');
+  }
+  return response.json();
+}
+
+export async function getSharedTemplate(token: string): Promise<{ template: QueryTemplate; parameters: any[] }> {
+  const response = await fetch(`${API_BASE}/templates/share/${token}`);
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error || 'Failed to load shared template');
+  }
+  return response.json();
+}
+
+// ---------------------------------------------------------------------------
+// Batch parameter runs
+// ---------------------------------------------------------------------------
+export async function createBatch(req: BatchCreateRequest): Promise<BatchRun> {
+  const response = await fetch(`${API_BASE}/batches`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error || 'Failed to create batch run');
+  }
+  return response.json();
+}
+
+export async function listBatches(): Promise<BatchRun[]> {
+  const response = await fetch(`${API_BASE}/batches`);
+  if (!response.ok) throw new Error('Failed to list batch runs');
+  return response.json();
+}
+
+export async function getBatch(id: number): Promise<BatchRun> {
+  const response = await fetch(`${API_BASE}/batches/${id}`);
+  if (!response.ok) throw new Error('Failed to fetch batch run');
+  return response.json();
+}
+
+export async function cancelBatch(id: number): Promise<BatchRun> {
+  const response = await fetch(`${API_BASE}/batches/${id}/cancel`, { method: 'POST' });
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error || 'Failed to cancel batch run');
+  }
+  return response.json();
+}
+
+export async function retryBatch(
+  id: number,
+  parameterSets: Record<string, any>[],
+): Promise<BatchRun> {
+  const response = await fetch(`${API_BASE}/batches/${id}/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parameterSets }),
+  });
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error || 'Failed to retry batch run');
   }
   return response.json();
 }

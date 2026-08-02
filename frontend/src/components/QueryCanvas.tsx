@@ -16,6 +16,7 @@ import 'reactflow/dist/style.css';
 import { useQueryStore } from '@/store/queryStore';
 import TableNode from './TableNode';
 import type { TableNode as TableNodeType, Join } from '@/types';
+import { createTableInstance } from '@/lib/ast';
 
 const nodeTypes: NodeTypes = {
   table: TableNode,
@@ -24,19 +25,6 @@ const nodeTypes: NodeTypes = {
 interface QueryCanvasProps {
   onDrop: (e: React.DragEvent) => void;
   onDragOver: (e: React.DragEvent) => void;
-}
-
-let nodeId = 0;
-let aliasCounter: Record<string, number> = {};
-
-function getAlias(tableName: string): string {
-  if (!aliasCounter[tableName]) {
-    aliasCounter[tableName] = 0;
-  }
-  aliasCounter[tableName]++;
-  const count = aliasCounter[tableName];
-  const base = tableName.substring(0, 2).toLowerCase();
-  return count > 1 ? `${base}${count}` : base;
 }
 
 export default function QueryCanvas({ onDrop, onDragOver }: QueryCanvasProps) {
@@ -172,13 +160,11 @@ export default function QueryCanvas({ onDrop, onDragOver }: QueryCanvasProps) {
         y: e.clientY - reactFlowBounds.top - 50,
       };
 
-      nodeId++;
-      const newTable: TableNodeType = {
-        id: `node-${nodeId}`,
+      const newTable = createTableInstance(
         tableName,
-        alias: getAlias(tableName),
+        useQueryStore.getState().tables,
         position,
-      };
+      );
 
       addTable(newTable);
 
