@@ -7,8 +7,9 @@ import type {
 } from '@/types';
 import { isWhereCondition, isWhereClause } from '@/types';
 
-const OPERATORS: ComparisonOperator[] = ['=', '!=', '>', '<', '>=', '<=', 'LIKE', 'IN', 'NOT IN', 'EXISTS', 'NOT EXISTS'];
+const OPERATORS: ComparisonOperator[] = ['=', '!=', '>', '<', '>=', '<=', 'LIKE', 'NOT LIKE', 'IN', 'NOT IN', 'IS NULL', 'IS NOT NULL', 'EXISTS', 'NOT EXISTS'];
 const SUBQUERY_OPERATORS: ComparisonOperator[] = ['IN', 'NOT IN', 'EXISTS', 'NOT EXISTS'];
+const NO_VALUE_OPERATORS: ComparisonOperator[] = ['IS NULL', 'IS NOT NULL'];
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 11);
@@ -126,6 +127,7 @@ function WhereNodeEditor({ node, path, tables, onUpdate, onRemove }: WhereNodeEd
       (c) => c.tableId === node.tableId && c.columnName === node.columnName
     );
     const isSubqueryOp = SUBQUERY_OPERATORS.includes(node.cmp);
+    const isNoValueOp = NO_VALUE_OPERATORS.includes(node.cmp);
     const hasSubquery = node.subquery !== undefined;
 
     return (
@@ -208,10 +210,12 @@ function WhereNodeEditor({ node, path, tables, onUpdate, onRemove }: WhereNodeEd
               {hasSubquery ? 'Edit Subquery' : 'Use Subquery'}
             </button>
           )}
-          {!isSubqueryOp ? (
+          {isNoValueOp ? (
+            <span className="flex-1 text-xs text-dark-500 italic">No value required</span>
+          ) : !isSubqueryOp ? (
             <input
               type="text"
-              value={String(node.value)}
+              value={node.value === undefined || node.value === null ? '' : String(node.value)}
               placeholder="value"
               onChange={(e) => {
                 let value: string | number = e.target.value;

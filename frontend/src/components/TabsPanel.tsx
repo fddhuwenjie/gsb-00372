@@ -1,16 +1,18 @@
 import { useState } from 'react';
-import { Table, BarChart3, History, GitBranch, Share2, Download, Play } from 'lucide-react';
+import { Table, BarChart3, History, GitBranch, Share2, Download, Play, FileCode } from 'lucide-react';
 import { useQueryStore } from '@/store/queryStore';
 import type { TabType, ResultViewMode } from '@/types';
 import ResultPanel from './ResultPanel';
 import ExplainPlan from './ExplainPlan';
 import ChartView from './ChartView';
 import ChartConfig from './ChartConfig';
+import TemplatesPanel from './TemplatesPanel';
 import { exportQuery } from '@/services/api';
 
 const TABS: { id: TabType; label: string; icon: React.ReactNode }[] = [
   { id: 'result', label: 'Results', icon: <Table className="w-4 h-4" /> },
   { id: 'saved', label: 'Saved', icon: <BarChart3 className="w-4 h-4" /> },
+  { id: 'templates', label: 'Templates', icon: <FileCode className="w-4 h-4" /> },
   { id: 'history', label: 'History', icon: <History className="w-4 h-4" /> },
   { id: 'plan', label: 'Plan', icon: <GitBranch className="w-4 h-4" /> },
 ];
@@ -168,6 +170,12 @@ export default function TabsPanel() {
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {activeTab === 'templates' && (
+            <div className="h-full">
+              <TemplatesPanel />
             </div>
           )}
 
