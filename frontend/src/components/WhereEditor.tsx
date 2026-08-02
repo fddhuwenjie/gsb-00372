@@ -295,7 +295,7 @@ export default function WhereEditor() {
 
       if (rest.length === 0) {
         const newChildren = [...node.children];
-        newChildren[index] = newNode;
+        newChildren[index] = newNode as WhereCondition | WhereClause;
         return { ...node, children: newChildren };
       }
 
@@ -308,7 +308,7 @@ export default function WhereEditor() {
       return node;
     };
 
-    const result = updateRecursive(where, path);
+    const result = updateRecursive(where as WhereCondition, path);
     setWhere(result);
   };
 
@@ -347,7 +347,7 @@ export default function WhereEditor() {
       return node;
     };
 
-    const result = removeRecursive(where, path);
+    const result = removeRecursive(where as WhereCondition, path);
     setWhere(result);
   };
 

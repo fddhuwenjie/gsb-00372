@@ -1,8 +1,16 @@
 from flask import Blueprint, request, jsonify, make_response
 from app.services.metadata_service import MetadataService
 from app.services.query_executor import QueryExecutor
+from app.services.template_service import (
+    TemplateService,
+    TemplateValidationError,
+    TemplateMigrationError,
+    CURRENT_TEMPLATE_VERSION,
+)
+from app.services.plan_service import diff_plans
+from app.services.batch_service import BatchError, BatchRunner
 from app.services.utils import generate_token, generate_export_sql
-from app.models import SavedQuery, QueryHistory, db
+from app.models import SavedQuery, QueryHistory, QueryTemplate, QueryExecution, BatchRun, BatchItem, db
 from datetime import datetime, timedelta
 import uuid
 import json
@@ -463,7 +471,404 @@ def get_openapi_spec():
             },
             '/api/history': {
                 'get': {'summary': 'Get query history for current user session'}
+            },
+            '/api/templates': {
+                'get': {'summary': 'List query templates'},
+                'post': {'summary': 'Create a query template'}
+            },
+            '/api/templates/{id}': {
+                'get': {'summary': 'Get a template'},
+                'put': {'summary': 'Update a template'},
+                'delete': {'summary': 'Delete a template'}
+            },
+            '/api/templates/{id}/instantiate': {
+                'post': {'summary': 'Instantiate and optionally execute a template'}
+            },
+            '/api/templates/{id}/share': {
+                'post': {'summary': 'Generate a share token for a template'}
+            },
+            '/api/templates/share/{token}': {
+                'get': {'summary': 'Get a shared template by token'}
             }
         }
     }
     return jsonify(spec)
+
+
+# ======================================================================
+# Parameterised query templates
+# ======================================================================
+@api_bp.route('/templates', methods=['GET'])
+def list_templates():
+    templates = QueryTemplate.query.order_by(QueryTemplate.updated_at.desc()).all()
+    return jsonify([t.to_dict() for t in templates])
+
+
+@api_bp.route('/templates', methods=['POST'])
+def create_template():
+    try:
+        data = request.get_json() or {}
+        definition = data.get('template_definition') or data
+        definition = TemplateService.validate_template(definition)
+        TemplateService.check_schema(definition)
+        template = QueryTemplate(
+            name=definition['name'],
+            description=definition.get('description', ''),
+            template_version=definition.get(
+                'template_version', CURRENT_TEMPLATE_VERSION
+            ),
+            template_definition=definition,
+        )
+        db.session.add(template)
+        db.session.commit()
+        return jsonify(template.to_dict()), 201
+    except (TemplateValidationError, TemplateMigrationError) as e:
+        db.session.rollback()
+        return jsonify({'error': str(e), 'errors': getattr(e, 'errors', None)}), 400
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 400
+
+
+@api_bp.route('/templates/<int:template_id>', methods=['GET'])
+def get_template(template_id):
+    template = QueryTemplate.query.get_or_404(template_id)
+    return jsonify(template.to_dict())
+
+
+@api_bp.route('/templates/<int:template_id>', methods=['PUT'])
+def update_template(template_id):
+    template = QueryTemplate.query.get_or_404(template_id)
+    try:
+        data = request.get_json() or {}
+        definition = data.get('template_definition') or data
+        definition = TemplateService.validate_template(definition)
+        TemplateService.check_schema(definition)
+        template.name = definition['name']
+        template.description = definition.get('description', '')
+        template.template_version = definition.get(
+            'template_version', CURRENT_TEMPLATE_VERSION
+        )
+        template.template_definition = definition
+        template.updated_at = datetime.utcnow()
+        db.session.commit()
+        return jsonify(template.to_dict())
+    except (TemplateValidationError, TemplateMigrationError) as e:
+        db.session.rollback()
+        return jsonify({'error': str(e), 'errors': getattr(e, 'errors', None)}), 400
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 400
+
+
+@api_bp.route('/templates/<int:template_id>', methods=['DELETE'])
+def delete_template(template_id):
+    template = QueryTemplate.query.get_or_404(template_id)
+    db.session.delete(template)
+    db.session.commit()
+    return '', 204
+
+
+@api_bp.route('/templates/<int:template_id>/instantiate', methods=['POST'])
+def instantiate_template(template_id):
+    """
+    Instantiate a template: validate and coerce parameters, compile the
+    fixed AST to SQL, and optionally execute it.
+
+    Request body:
+        {"values": {...}, "execute": true|false}
+    """
+    template = QueryTemplate.query.get_or_404(template_id)
+    data = request.get_json() or {}
+    values = data.get('values', {})
+    execute = bool(data.get('execute', True))
+    try:
+        result = TemplateService.instantiate(
+            template.template_definition, values
+        )
+    except (TemplateValidationError, TemplateMigrationError) as e:
+        return jsonify({'error': str(e), 'errors': getattr(e, 'errors', None)}), 400
+
+    if not execute:
+        return jsonify({
+            'sql': result['sql'],
+            'params': result['params'],
+            'resolvedParameters': result['resolvedParameters'],
+            'parameters': TemplateService.describe_parameters(
+                template.template_definition
+            ),
+        })
+
+    try:
+        from app.services.query_executor import QueryExecutor
+        query_result = QueryExecutor._run(
+            result['sql'], result['params'], user_session=get_user_session()
+        )
+        query_result['resolvedParameters'] = result['resolvedParameters']
+        return jsonify(query_result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@api_bp.route('/templates/validate', methods=['POST'])
+def validate_template():
+    """Validate a template definition without persisting it."""
+    try:
+        data = request.get_json() or {}
+        definition = TemplateService.validate_template(data)
+        TemplateService.check_schema(definition)
+        return jsonify({
+            'valid': True,
+            'template': definition,
+            'parameters': TemplateService.describe_parameters(definition),
+        })
+    except (TemplateValidationError, TemplateMigrationError) as e:
+        return jsonify({
+            'valid': False,
+            'error': str(e),
+            'errors': getattr(e, 'errors', None),
+        }), 400
+
+
+@api_bp.route('/templates/<int:template_id>/share', methods=['POST'])
+def share_template(template_id):
+    template = QueryTemplate.query.get_or_404(template_id)
+    data = request.get_json() or {}
+    token = generate_token(6)
+    while QueryTemplate.query.filter_by(share_token=token).first():
+        token = generate_token(6)
+    template.share_token = token
+    expires_in = data.get('expires_in_hours', 24 * 7)
+    if expires_in and expires_in > 0:
+        template.share_expires_at = datetime.utcnow() + timedelta(hours=expires_in)
+    template.share_access_count = 0
+    db.session.commit()
+    return jsonify({
+        'token': token,
+        'url': f'/templates/share/{token}',
+        'expires_at': template.share_expires_at.isoformat() if template.share_expires_at else None,
+    })
+
+
+@api_bp.route('/templates/share/<token>', methods=['GET'])
+def get_shared_template(token):
+    template = QueryTemplate.query.filter_by(share_token=token).first()
+    if not template or not template.is_share_valid():
+        return jsonify({'error': 'Invalid or expired share token'}), 404
+    template.share_access_count = (template.share_access_count or 0) + 1
+    db.session.commit()
+    return jsonify({
+        'template': template.to_dict(),
+        'parameters': TemplateService.describe_parameters(
+            template.template_definition
+        ),
+    })
+
+
+# ======================================================================
+# Execution records + plan comparison
+# ======================================================================
+@api_bp.route('/executions', methods=['GET'])
+def list_executions():
+    session = get_user_session()
+    template_id = request.args.get('template_id', type=int)
+    query = QueryExecution.query.filter_by(user_session=session)
+    if template_id:
+        query = query.filter_by(template_id=template_id)
+    records = query.order_by(QueryExecution.created_at.desc()).limit(100).all()
+    return jsonify([r.to_dict() for r in records])
+
+
+@api_bp.route('/executions/<int:execution_id>', methods=['GET'])
+def get_execution(execution_id):
+    record = QueryExecution.query.get_or_404(execution_id)
+    data = record.to_dict()
+    data['astStructure'] = record.ast_structure
+    return jsonify(data)
+
+
+@api_bp.route('/plans/diff', methods=['POST'])
+def diff_plans_endpoint():
+    """
+    Compare two recorded executions.
+
+    Body: {"executionIdA": int, "executionIdB": int}
+    Returns a change set localised to AST nodes (JOIN, filter, aggregation,
+    index access) -- never SQL line numbers.
+    """
+    data = request.get_json() or {}
+    a = QueryExecution.query.get_or_404(data.get('executionIdA'))
+    b = QueryExecution.query.get_or_404(data.get('executionIdB'))
+
+    changes = diff_plans(
+        a.plan_nodes or [],
+        b.plan_nodes or [],
+        a.ast_structure or {},
+        b.ast_structure or {},
+    )
+
+    return jsonify({
+        'executionA': a.to_dict(),
+        'executionB': b.to_dict(),
+        'changes': changes,
+        'planFingerprintChanged': a.plan_fingerprint != b.plan_fingerprint,
+        'astHashChanged': a.ast_hash != b.ast_hash,
+        'rowCountDelta': (b.row_count or 0) - (a.row_count or 0),
+        'durationDeltaMs': round(
+            (b.duration_ms or 0) - (a.duration_ms or 0), 2
+        ),
+    })
+
+
+@api_bp.route('/templates/<int:template_id>/executions', methods=['GET'])
+def list_template_executions(template_id):
+    """List executions across versions of a template."""
+    records = (
+        QueryExecution.query
+        .filter_by(template_id=template_id)
+        .order_by(QueryExecution.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    return jsonify([r.to_dict() for r in records])
+
+
+@api_bp.route('/templates/<int:template_id>/compare-versions', methods=['POST'])
+def compare_template_versions(template_id):
+    """
+    Compare the latest execution of two template versions.
+
+    Body: {"versionA": int, "versionB": int}
+    """
+    data = request.get_json() or {}
+    version_a = data.get('versionA')
+    version_b = data.get('versionB')
+    if version_a is None or version_b is None:
+        return jsonify({'error': 'versionA and versionB are required'}), 400
+
+    a = (
+        QueryExecution.query
+        .filter_by(template_id=template_id, template_version=version_a)
+        .order_by(QueryExecution.created_at.desc())
+        .first()
+    )
+    b = (
+        QueryExecution.query
+        .filter_by(template_id=template_id, template_version=version_b)
+        .order_by(QueryExecution.created_at.desc())
+        .first()
+    )
+    if not a or not b:
+        return jsonify({'error': 'No execution found for one of the versions'}), 404
+
+    changes = diff_plans(
+        a.plan_nodes or [],
+        b.plan_nodes or [],
+        a.ast_structure or {},
+        b.ast_structure or {},
+    )
+    return jsonify({
+        'versionA': a.to_dict(),
+        'versionB': b.to_dict(),
+        'changes': changes,
+        'planFingerprintChanged': a.plan_fingerprint != b.plan_fingerprint,
+    })
+
+
+# ======================================================================
+# Cancellable batch parameter runs
+# ======================================================================
+@api_bp.route('/batches', methods=['POST'])
+def create_batch():
+    """
+    Submit a batch run of one template version over many parameter sets.
+
+    Body:
+        templateId, parameterSets[], concurrency?, maxTotalRows?,
+        timeoutSeconds?, idempotencyKey?, labels[]?
+    """
+    data = request.get_json() or {}
+    template_id = data.get('templateId')
+    if not template_id:
+        return jsonify({'error': 'templateId is required'}), 400
+    parameter_sets = data.get('parameterSets')
+    if not isinstance(parameter_sets, list):
+        return jsonify({'error': 'parameterSets must be a list'}), 400
+    try:
+        run, created = BatchRunner.create_batch(
+            template_id=template_id,
+            parameter_sets=parameter_sets,
+            idempotency_key=data.get('idempotencyKey'),
+            user_session=get_user_session(),
+            concurrency=data.get('concurrency'),
+            max_total_rows=data.get('maxTotalRows'),
+            timeout_seconds=data.get('timeoutSeconds'),
+            labels=data.get('labels'),
+        )
+    except BatchError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    # Execute synchronously (the Flask dev server / test client is
+    # single-process; a production deployment would hand this to a
+    # worker). Each item still runs in its own thread with bounded
+    # concurrency.
+    from flask import current_app
+    BatchRunner.run_batch(run.id, parameter_sets, app=current_app._get_current_object())
+    run = BatchRun.query.get(run.id)
+    code = 201 if created else 200
+    return jsonify(run.to_dict(include_items=True)), code
+
+
+@api_bp.route('/batches', methods=['GET'])
+def list_batches():
+    session = get_user_session()
+    runs = (
+        BatchRun.query
+        .filter_by(user_session=session)
+        .order_by(BatchRun.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    return jsonify([r.to_dict() for r in runs])
+
+
+@api_bp.route('/batches/<int:batch_id>', methods=['GET'])
+def get_batch(batch_id):
+    run = BatchRun.query.get_or_404(batch_id)
+    return jsonify(run.to_dict(include_items=True))
+
+
+@api_bp.route('/batches/<int:batch_id>/cancel', methods=['POST'])
+def cancel_batch(batch_id):
+    try:
+        run = BatchRunner.cancel(batch_id)
+    except BatchError as exc:
+        return jsonify({'error': str(exc)}), 404
+    return jsonify(run.to_dict(include_items=True))
+
+
+@api_bp.route('/batches/<int:batch_id>/retry', methods=['POST'])
+def retry_batch(batch_id):
+    data = request.get_json() or {}
+    parameter_sets = data.get('parameterSets')
+    from flask import current_app
+    try:
+        run = BatchRunner.retry(
+            batch_id, parameter_sets,
+            app=current_app._get_current_object(),
+        )
+    except BatchError as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify(run.to_dict(include_items=True))
+
+
+@api_bp.route('/batches/<int:batch_id>/items', methods=['GET'])
+def list_batch_items(batch_id):
+    BatchRun.query.get_or_404(batch_id)
+    items = (
+        BatchItem.query
+        .filter_by(batch_id=batch_id)
+        .order_by(BatchItem.item_index.asc())
+        .all()
+    )
+    return jsonify([i.to_dict() for i in items])

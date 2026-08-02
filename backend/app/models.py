@@ -106,6 +106,41 @@ class SavedQuery(db.Model):
             return False
         return True
 
+class QueryTemplate(db.Model):
+    __tablename__ = 'query_templates'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text)
+    template_version = db.Column(db.Integer, nullable=False, default=1)
+    template_definition = db.Column(db.JSON, nullable=False)
+    share_token = db.Column(db.String(10), unique=True, index=True)
+    share_expires_at = db.Column(db.DateTime)
+    share_access_count = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'template_version': self.template_version,
+            'template_definition': self.template_definition,
+            'share_token': self.share_token,
+            'share_expires_at': self.share_expires_at.isoformat() if self.share_expires_at else None,
+            'share_access_count': self.share_access_count,
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat(),
+        }
+
+    def is_share_valid(self):
+        if not self.share_token:
+            return False
+        if self.share_expires_at and datetime.utcnow() > self.share_expires_at:
+            return False
+        return True
+
+
 class QueryHistory(db.Model):
     __tablename__ = 'query_history'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -136,3 +171,175 @@ class QueryHistory(db.Model):
             for record in records[keep:]:
                 db.session.delete(record)
             db.session.commit()
+
+
+class QueryExecution(db.Model):
+    """
+    One recorded execution of a query AST, with its plan fingerprint.
+
+    Sensitive parameter *values* are never stored. We only keep the
+    parameter type/null summary, the canonical AST hash, the parsed
+    EXPLAIN QUERY PLAN, timing and row count.
+    """
+    __tablename__ = 'query_executions'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_session = db.Column(db.String(100), index=True)
+
+    ast_hash = db.Column(db.String(64), index=True, nullable=False)
+    ast_structure = db.Column(db.JSON, nullable=False)
+    param_type_summary = db.Column(db.JSON)
+
+    plan_fingerprint = db.Column(db.String(64), index=True)
+    plan_nodes = db.Column(db.JSON)
+
+    duration_ms = db.Column(db.Float)
+    row_count = db.Column(db.Integer)
+    column_count = db.Column(db.Integer)
+
+    template_id = db.Column(db.Integer, db.ForeignKey('query_templates.id'), index=True)
+    template_version = db.Column(db.Integer)
+
+    sql_text = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'astHash': self.ast_hash,
+            'paramTypeSummary': self.param_type_summary,
+            'planFingerprint': self.plan_fingerprint,
+            'planNodes': self.plan_nodes,
+            'durationMs': self.duration_ms,
+            'rowCount': self.row_count,
+            'columnCount': self.column_count,
+            'templateId': self.template_id,
+            'templateVersion': self.template_version,
+            'createdAt': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class BatchRun(db.Model):
+    """
+    A cancellable batch execution of one immutable template version over
+    many parameter sets. State is persisted so a cancelled/failed run can
+    be queried or retried without re-running successful items.
+    """
+    __tablename__ = 'batch_runs'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    idempotency_key = db.Column(db.String(128), unique=True, index=True)
+    user_session = db.Column(db.String(100), index=True)
+
+    template_id = db.Column(
+        db.Integer, db.ForeignKey('query_templates.id'), nullable=False,
+    )
+    template_version = db.Column(db.Integer, nullable=False)
+
+    status = db.Column(db.String(20), nullable=False, default='pending')
+    # pending -> running -> completed | cancelled | failed
+    concurrency = db.Column(db.Integer, nullable=False, default=2)
+    max_total_rows = db.Column(db.Integer)
+    timeout_seconds = db.Column(db.Float)
+
+    total_items = db.Column(db.Integer, nullable=False, default=0)
+    succeeded_items = db.Column(db.Integer, nullable=False, default=0)
+    failed_items = db.Column(db.Integer, nullable=False, default=0)
+    cancelled_items = db.Column(db.Integer, nullable=False, default=0)
+    total_rows = db.Column(db.Integer, nullable=False, default=0)
+
+    error = db.Column(db.Text)
+    created_at = db.Column(
+        db.DateTime, default=datetime.utcnow, index=True,
+    )
+    started_at = db.Column(db.DateTime)
+    finished_at = db.Column(db.DateTime)
+
+    items = db.relationship(
+        'BatchItem', backref='batch_run',
+        cascade='all, delete-orphan', lazy='dynamic',
+    )
+
+    def to_dict(self, include_items=False):
+        data = {
+            'id': self.id,
+            'idempotencyKey': self.idempotency_key,
+            'templateId': self.template_id,
+            'templateVersion': self.template_version,
+            'status': self.status,
+            'concurrency': self.concurrency,
+            'maxTotalRows': self.max_total_rows,
+            'timeoutSeconds': self.timeout_seconds,
+            'totalItems': self.total_items,
+            'succeededItems': self.succeeded_items,
+            'failedItems': self.failed_items,
+            'cancelledItems': self.cancelled_items,
+            'totalRows': self.total_rows,
+            'error': self.error,
+            'createdAt': self.created_at.isoformat() if self.created_at else None,
+            'startedAt': self.started_at.isoformat() if self.started_at else None,
+            'finishedAt': self.finished_at.isoformat() if self.finished_at else None,
+        }
+        if include_items:
+            data['items'] = [i.to_dict() for i in self.items.all()]
+        return data
+
+
+class BatchItem(db.Model):
+    """
+    One parameter set within a batch run. Results are stored per item so
+    successful items are not re-executed on retry; each item result is
+    isolated (a rejected item never pollutes the others).
+    """
+    __tablename__ = 'batch_items'
+
+    STATUS_PENDING = 'pending'
+    STATUS_RUNNING = 'running'
+    STATUS_SUCCEEDED = 'succeeded'
+    STATUS_FAILED = 'failed'
+    STATUS_CANCELLED = 'cancelled'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    batch_id = db.Column(
+        db.Integer, db.ForeignKey('batch_runs.id'),
+        nullable=False, index=True,
+    )
+    item_index = db.Column(db.Integer, nullable=False)
+    status = db.Column(db.String(20), nullable=False, default=STATUS_PENDING)
+
+    # Non-sensitive parameter type summary only (no raw values).
+    param_type_summary = db.Column(db.JSON)
+    # A client-supplied label/correlation id, never used in SQL.
+    label = db.Column(db.String(200))
+
+    execution_id = db.Column(
+        db.Integer, db.ForeignKey('query_executions.id'),
+    )
+    plan_fingerprint = db.Column(db.String(64))
+    row_count = db.Column(db.Integer)
+    duration_ms = db.Column(db.Float)
+    error = db.Column(db.Text)
+    # Only a short preview of rows is retained per item to bound storage.
+    result_preview = db.Column(db.JSON)
+
+    started_at = db.Column(db.DateTime)
+    finished_at = db.Column(db.DateTime)
+
+    __table_args__ = (
+        db.UniqueConstraint('batch_id', 'item_index', name='uq_batch_item'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'itemIndex': self.item_index,
+            'status': self.status,
+            'paramTypeSummary': self.param_type_summary,
+            'label': self.label,
+            'executionId': self.execution_id,
+            'planFingerprint': self.plan_fingerprint,
+            'rowCount': self.row_count,
+            'durationMs': self.duration_ms,
+            'error': self.error,
+            'resultPreview': self.result_preview,
+            'startedAt': self.started_at.isoformat() if self.started_at else None,
+            'finishedAt': self.finished_at.isoformat() if self.finished_at else None,
+        }
