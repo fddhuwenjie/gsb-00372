@@ -3,7 +3,9 @@ import { Link, ChevronDown, Trash2, Plus, Lightbulb } from 'lucide-react';
 import { useQueryStore } from '@/store/queryStore';
 import type { JoinType } from '@/types';
 
-const JOIN_TYPES: JoinType[] = ['INNER', 'LEFT', 'RIGHT', 'FULL'];
+// SQLite executes only these join types; RIGHT/FULL are intentionally omitted
+// (the backend rejects them) so the builder can only produce valid queries.
+const JOIN_TYPES: JoinType[] = ['INNER', 'LEFT', 'CROSS'];
 
 export default function JoinEditor() {
   const [expanded, setExpanded] = useState(true);
@@ -20,6 +22,8 @@ export default function JoinEditor() {
         return 'Returns rows where both tables have matching values';
       case 'LEFT':
         return 'Returns all rows from left table, matching from right';
+      case 'CROSS':
+        return 'Returns the Cartesian product of both tables';
       case 'RIGHT':
         return 'Returns all rows from right table, matching from left';
       case 'FULL':
@@ -33,6 +37,8 @@ export default function JoinEditor() {
         return 'bg-primary-900/50 text-primary-300 border-primary-700';
       case 'LEFT':
         return 'bg-emerald-900/50 text-emerald-300 border-emerald-700';
+      case 'CROSS':
+        return 'bg-sky-900/50 text-sky-300 border-sky-700';
       case 'RIGHT':
         return 'bg-amber-900/50 text-amber-300 border-amber-700';
       case 'FULL':

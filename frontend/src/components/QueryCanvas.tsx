@@ -15,7 +15,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import { useQueryStore } from '@/store/queryStore';
 import TableNode from './TableNode';
-import type { TableNode as TableNodeType, Join } from '@/types';
+import type { Join } from '@/types';
 
 const nodeTypes: NodeTypes = {
   table: TableNode,
@@ -26,24 +26,11 @@ interface QueryCanvasProps {
   onDragOver: (e: React.DragEvent) => void;
 }
 
-let nodeId = 0;
-let aliasCounter: Record<string, number> = {};
-
-function getAlias(tableName: string): string {
-  if (!aliasCounter[tableName]) {
-    aliasCounter[tableName] = 0;
-  }
-  aliasCounter[tableName]++;
-  const count = aliasCounter[tableName];
-  const base = tableName.substring(0, 2).toLowerCase();
-  return count > 1 ? `${base}${count}` : base;
-}
-
 export default function QueryCanvas({ onDrop, onDragOver }: QueryCanvasProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const addTable = useQueryStore((state) => state.addTable);
+  const createTableInstance = useQueryStore((state) => state.createTableInstance);
   const updateTablePosition = useQueryStore((state) => state.updateTablePosition);
   const addJoin = useQueryStore((state) => state.addJoin);
   const tables = useQueryStore((state) => state.tables);
@@ -172,15 +159,7 @@ export default function QueryCanvas({ onDrop, onDragOver }: QueryCanvasProps) {
         y: e.clientY - reactFlowBounds.top - 50,
       };
 
-      nodeId++;
-      const newTable: TableNodeType = {
-        id: `node-${nodeId}`,
-        tableName,
-        alias: getAlias(tableName),
-        position,
-      };
-
-      addTable(newTable);
+      const newTable = createTableInstance(tableName, position);
 
       const newNode: Node = {
         id: newTable.id,
@@ -195,7 +174,7 @@ export default function QueryCanvas({ onDrop, onDragOver }: QueryCanvasProps) {
       setNodes((nds) => [...nds, newNode]);
       onDrop(e);
     },
-    [addTable, setNodes, onDrop]
+    [createTableInstance, setNodes, onDrop]
   );
 
   const handleEdgeClick = useCallback(

@@ -1,14 +1,16 @@
 import { useState } from 'react';
-import { Save, FolderOpen, Share2, Play, Loader2 } from 'lucide-react';
+import { Save, FolderOpen, Share2, Play, Loader2, FileCode } from 'lucide-react';
 import { useQueryStore } from '@/store/queryStore';
 import SaveDialog from './SaveDialog';
 import SharePanel from './SharePanel';
 import OpenDialog from './OpenDialog';
+import SaveTemplateDialog from './SaveTemplateDialog';
 
 export default function Toolbar() {
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [showOpenDialog, setShowOpenDialog] = useState(false);
   const [showSharePanel, setShowSharePanel] = useState(false);
+  const [showTemplateDialog, setShowTemplateDialog] = useState(false);
   const isExecuting = useQueryStore((state) => state.isExecuting);
   const executeQuery = useQueryStore((state) => state.executeQuery);
   const runExplain = useQueryStore((state) => state.runExplain);
@@ -45,6 +47,15 @@ export default function Toolbar() {
           >
             <Share2 className="w-4 h-4" />
             <span>Share</span>
+          </button>
+          <button
+            onClick={() => setShowTemplateDialog(true)}
+            disabled={tables.length === 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-dark-700 hover:bg-dark-600 text-dark-200 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Save as reusable template"
+          >
+            <FileCode className="w-4 h-4" />
+            <span>Save as Template</span>
           </button>
         </div>
 
@@ -86,6 +97,9 @@ export default function Toolbar() {
       )}
       {showSharePanel && (
         <SharePanel onClose={() => setShowSharePanel(false)} />
+      )}
+      {showTemplateDialog && (
+        <SaveTemplateDialog onClose={() => setShowTemplateDialog(false)} />
       )}
     </>
   );
