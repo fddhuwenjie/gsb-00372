@@ -25,7 +25,7 @@ export interface TableNode {
   position: { x: number; y: number };
 }
 
-export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL';
+export type JoinType = 'INNER' | 'LEFT' | 'CROSS';
 
 export interface Join {
   id: string;
@@ -44,19 +44,23 @@ export interface SelectedField {
   alias?: string;
 }
 
-export type ComparisonOperator = '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE' | 'IN' | 'NOT IN' | 'EXISTS' | 'NOT EXISTS';
+export type ComparisonOperator =
+  | '=' | '!=' | '>' | '<' | '>=' | '<='
+  | 'LIKE' | 'IN' | 'NOT IN'
+  | 'IS NULL' | 'IS NOT NULL'
+  | 'EXISTS' | 'NOT EXISTS';
 
 export interface WhereClause {
   tableId: string;
   columnName: string;
   cmp: ComparisonOperator;
-  value: string | number | boolean | (string | number)[];
+  value?: string | number | boolean | null | (string | number)[];
   id: string;
   subquery?: QueryStructure;
 }
 
 export interface WhereCondition {
-  op: 'AND' | 'OR';
+  op: 'AND' | 'OR' | 'NOT';
   children: (WhereCondition | WhereClause)[];
   id: string;
 }
@@ -70,6 +74,12 @@ export interface Aggregation {
   alias?: string;
 }
 
+export interface OrderByItem {
+  tableId: string;
+  columnName: string;
+  direction: 'ASC' | 'DESC';
+}
+
 export interface CTE {
   id: string;
   name: string;
@@ -81,8 +91,11 @@ export interface QueryStructure {
   joins: Join[];
   selectedFields: SelectedField[];
   where: WhereCondition | null;
+  having: WhereCondition | null;
   aggregations: Aggregation[];
+  orderBy: OrderByItem[];
   limit: number;
+  offset?: number;
   ctes?: CTE[];
 }
 
@@ -101,6 +114,7 @@ export interface QueryResult {
   rows: any[][];
   executionTime: number;
   rowCount: number;
+  truncated?: boolean;
   sql?: string;
   params?: Record<string, any>;
 }
@@ -112,7 +126,7 @@ export function isWhereCondition(node: WhereNode): node is WhereCondition {
 }
 
 export function isWhereClause(node: WhereNode): node is WhereClause {
-  return 'columnName' in node && 'cmp' in node;
+  return 'cmp' in node;
 }
 
 export type ChartType = 'line' | 'bar' | 'pie' | 'scatter';
@@ -174,6 +188,7 @@ export interface ExplainResult {
   };
   bytecode: any[];
   sql: string;
+  params?: Record<string, any>;
   rawPlanRows: any[];
   rawBytecodeRows: any[];
 }
@@ -183,5 +198,167 @@ export interface ShareResult {
   result: QueryResult;
 }
 
-export type TabType = 'result' | 'saved' | 'history' | 'plan' | 'share';
+export type TabType = 'result' | 'saved' | 'history' | 'plan' | 'share' | 'templates' | 'plan-diff';
 export type ResultViewMode = 'table' | 'chart';
+
+export type TemplateParameterType =
+  | 'string'
+  | 'integer'
+  | 'number'
+  | 'boolean'
+  | 'date'
+  | 'string_list'
+  | 'integer_list'
+  | 'date_range';
+
+export interface TemplateParameter {
+  name: string;
+  type: TemplateParameterType;
+  label?: string;
+  description?: string;
+  required?: boolean;
+  default?: any;
+}
+
+export interface SchemaRef {
+  tableId: string;
+  tableName: string;
+  columnName: string;
+  location: string;
+}
+
+export interface QueryTemplate {
+  id: number;
+  name: string;
+  description: string;
+  version: number;
+  query_structure: QueryStructure;
+  parameters: TemplateParameter[];
+  schema_refs: SchemaRef[];
+  share_token?: string;
+  share_expires_at?: string;
+  share_access_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TemplateInstantiateResult {
+  queryStructure: QueryStructure;
+  sql: string;
+  params: Record<string, any>;
+  templateVersion: number;
+}
+
+export interface TemplateValidationResult {
+  valid: boolean;
+  errors: string[];
+}
+
+export interface PlanOperation {
+  operation: 'SCAN' | 'SEARCH' | 'TEMP_BTREE' | 'INDEX_SCAN' | 'CORRELATED_SCALAR' | 'SUBQUERY_LIST' | 'OTHER' | null;
+  tableName: string | null;
+  tableAlias: string | null;
+  tableId: string | null;
+  indexName: string | null;
+  joinId: string | null;
+  category: 'table_scan' | 'index_access' | 'compound' | 'other' | null;
+  astNodeKeys: string[];
+  detail: string;
+}
+
+export interface PlanSnapshot {
+  id: number;
+  templateId: number | null;
+  templateVersion: number | null;
+  label: string | null;
+  astHash: string;
+  paramTypeSummary: Record<string, string>;
+  normalizedPlan: PlanOperation[];
+  planOperations: PlanOperation[];
+  rowCount: number;
+  durationMs: number;
+  createdAt: string;
+}
+
+export interface PlanChangedOperation {
+  tableId: string;
+  tableName: string | null;
+  old: PlanOperation;
+  new: PlanOperation;
+  changedFields: string[];
+  astNodeKeys: string[];
+}
+
+export interface AstChange {
+  astNodeKey: string;
+  tableId: string;
+  changeType: string;
+  oldValue: string;
+  newValue: string;
+}
+
+export interface PlanDiff {
+  added: PlanOperation[];
+  removed: PlanOperation[];
+  changed: PlanChangedOperation[];
+  astChanges: AstChange[];
+  summary: {
+    added: number;
+    removed: number;
+    changed: number;
+    hasChanges: boolean;
+  };
+}
+
+export interface PlanCompareResult {
+  oldSnapshot?: PlanSnapshot;
+  newSnapshot?: PlanSnapshot;
+  diff: PlanDiff;
+}
+
+export type BatchRunStatus =
+  | 'pending' | 'running' | 'completed' | 'cancelled' | 'partially_failed';
+
+export type BatchItemStatus =
+  | 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'rejected';
+
+export interface BatchItem {
+  id: number;
+  batchRunId: number;
+  itemIndex: number;
+  parameterSummary: Record<string, string>;
+  status: BatchItemStatus;
+  attemptCount: number;
+  rowCount: number;
+  durationMs: number;
+  error: string | null;
+  planSnapshotId: number | null;
+  columns?: { name: string; type: string }[];
+  rows?: any[][];
+  createdAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface BatchRun {
+  id: number;
+  templateId: number;
+  templateVersion: number;
+  idempotencyKey: string;
+  status: BatchRunStatus;
+  concurrency: number;
+  maxTotalRows: number | null;
+  maxDurationMs: number | null;
+  totalItems: number;
+  succeededCount: number;
+  failedCount: number;
+  cancelledCount: number;
+  rejectedCount: number;
+  totalRows: number;
+  totalDurationMs: number;
+  error: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  items?: BatchItem[];
+}

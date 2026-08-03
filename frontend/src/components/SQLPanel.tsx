@@ -51,7 +51,7 @@ export default function SQLPanel() {
 
   const formatSQL = (sql: string) => {
     return sql
-      .replace(/\b(SELECT|FROM|WHERE|AND|OR|GROUP BY|ORDER BY|LIMIT|INNER|LEFT|RIGHT|FULL|JOIN|ON)\b/g, '\n$1')
+      .replace(/\b(SELECT|FROM|WHERE|AND|OR|NOT|GROUP BY|HAVING|ORDER BY|LIMIT|OFFSET|INNER|LEFT|CROSS|JOIN|ON)\b/g, '\n$1')
       .replace(/\n{2,}/g, '\n')
       .trim();
   };
