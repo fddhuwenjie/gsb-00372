@@ -27,7 +27,9 @@ export default function CTEPane() {
         joins: [],
         selectedFields: [],
         where: null,
+        having: null,
         aggregations: [],
+        orderBy: [],
         limit: 100,
       },
     };
@@ -58,7 +60,9 @@ export default function CTEPane() {
       joins: useQueryStore.getState().joins,
       selectedFields: useQueryStore.getState().selectedFields,
       where: useQueryStore.getState().where,
+      having: useQueryStore.getState().having,
       aggregations: useQueryStore.getState().aggregations,
+      orderBy: useQueryStore.getState().orderBy,
       limit: useQueryStore.getState().limit,
       ctes: undefined,
     };

@@ -7,8 +7,10 @@ import type {
 } from '@/types';
 import { isWhereCondition, isWhereClause } from '@/types';
 
-const OPERATORS: ComparisonOperator[] = ['=', '!=', '>', '<', '>=', '<=', 'LIKE', 'IN', 'NOT IN', 'EXISTS', 'NOT EXISTS'];
+const OPERATORS: ComparisonOperator[] = ['=', '!=', '>', '<', '>=', '<=', 'LIKE', 'IN', 'NOT IN', 'IS NULL', 'IS NOT NULL', 'EXISTS', 'NOT EXISTS'];
 const SUBQUERY_OPERATORS: ComparisonOperator[] = ['IN', 'NOT IN', 'EXISTS', 'NOT EXISTS'];
+const NULL_OPERATORS: ComparisonOperator[] = ['IS NULL', 'IS NOT NULL'];
+const NO_VALUE_OPERATORS: ComparisonOperator[] = ['IS NULL', 'IS NOT NULL', 'EXISTS', 'NOT EXISTS'];
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 11);
@@ -44,20 +46,22 @@ function WhereNodeEditor({ node, path, tables, onUpdate, onRemove }: WhereNodeEd
   };
 
   if (isWhereCondition(node)) {
+    const isNot = node.op === 'NOT';
     return (
       <div className="ml-4 border-l-2 border-dark-600 pl-3 py-2">
         <div className="flex items-center gap-2 mb-2">
           <select
             value={node.op}
             onChange={(e) =>
-              onUpdate(path, { ...node, op: e.target.value as 'AND' | 'OR' })
+              onUpdate(path, { ...node, op: e.target.value as 'AND' | 'OR' | 'NOT' })
             }
             className="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-sm text-dark-200 focus:outline-none focus:border-primary-500"
           >
             <option value="AND">AND</option>
             <option value="OR">OR</option>
+            <option value="NOT">NOT</option>
           </select>
-          <span className="text-xs text-dark-400">Group</span>
+          <span className="text-xs text-dark-400">{isNot ? 'negates child' : 'Group'}</span>
           <button
             onClick={() => onRemove(path)}
             className="ml-auto p-1 text-dark-500 hover:text-red-400 transition-colors"
@@ -78,7 +82,47 @@ function WhereNodeEditor({ node, path, tables, onUpdate, onRemove }: WhereNodeEd
             />
           ))}
         </div>
-        <div className="flex gap-2 mt-2">
+        {!isNot && (
+          <div className="flex gap-2 mt-2">
+            <button
+              onClick={() => {
+                const newClause: WhereClause = {
+                  id: generateId(),
+                  tableId: tables[0]?.id || '',
+                  columnName: '',
+                  cmp: '=',
+                  value: '',
+                };
+                onUpdate(path, {
+                  ...node,
+                  children: [...node.children, newClause],
+                });
+              }}
+              className="flex items-center gap-1 text-xs text-primary-400 hover:text-primary-300 transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add condition
+            </button>
+            <button
+              onClick={() => {
+                const newGroup: WhereCondition = {
+                  id: generateId(),
+                  op: 'AND',
+                  children: [],
+                };
+                onUpdate(path, {
+                  ...node,
+                  children: [...node.children, newGroup],
+                });
+              }}
+              className="flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add group
+            </button>
+          </div>
+        )}
+        {isNot && node.children.length === 0 && (
           <button
             onClick={() => {
               const newClause: WhereClause = {
@@ -90,32 +134,15 @@ function WhereNodeEditor({ node, path, tables, onUpdate, onRemove }: WhereNodeEd
               };
               onUpdate(path, {
                 ...node,
-                children: [...node.children, newClause],
+                children: [newClause],
               });
             }}
             className="flex items-center gap-1 text-xs text-primary-400 hover:text-primary-300 transition-colors"
           >
             <Plus className="w-3.5 h-3.5" />
-            Add condition
+            Add condition to negate
           </button>
-          <button
-            onClick={() => {
-              const newGroup: WhereCondition = {
-                id: generateId(),
-                op: 'AND',
-                children: [],
-              };
-              onUpdate(path, {
-                ...node,
-                children: [...node.children, newGroup],
-              });
-            }}
-            className="flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add group
-          </button>
-        </div>
+        )}
       </div>
     );
   }
@@ -192,7 +219,9 @@ function WhereNodeEditor({ node, path, tables, onUpdate, onRemove }: WhereNodeEd
                     selectedFields: [],
                     joins: [],
                     where: null,
+                    having: null,
                     aggregations: [],
+                    orderBy: [],
                     limit: 100,
                   };
                   delete newNode.value;
@@ -208,29 +237,17 @@ function WhereNodeEditor({ node, path, tables, onUpdate, onRemove }: WhereNodeEd
               {hasSubquery ? 'Edit Subquery' : 'Use Subquery'}
             </button>
           )}
-          {!isSubqueryOp ? (
-            <input
-              type="text"
-              value={String(node.value)}
-              placeholder="value"
-              onChange={(e) => {
-                let value: string | number = e.target.value;
-                if (selectedColumn && selectedColumn.columnType.toLowerCase().includes('int')) {
-                  const num = parseInt(e.target.value, 10);
-                  if (!isNaN(num)) {
-                    value = num;
-                  }
-                } else if (selectedColumn && (selectedColumn.columnType.toLowerCase().includes('decimal') || selectedColumn.columnType.toLowerCase().includes('numeric'))) {
-                  const num = parseFloat(e.target.value);
-                  if (!isNaN(num)) {
-                    value = num;
-                  }
-                }
-                onUpdate(path, { ...node, value });
-              }}
-              className="flex-1 bg-dark-700 border border-dark-600 rounded px-2 py-1 text-sm text-dark-200 focus:outline-none focus:border-primary-500 min-w-[120px]"
-            />
-          ) : hasSubquery ? (
+          {NO_VALUE_OPERATORS.includes(node.cmp) ? (
+            isSubqueryOp && hasSubquery ? (
+              <span className="flex-1 text-xs text-emerald-400 font-mono bg-dark-900 px-2 py-1 rounded truncate">
+                (SELECT ...) [Subquery]
+              </span>
+            ) : (
+              <span className="flex-1 text-xs text-dark-500 italic px-2 py-1">
+                {NULL_OPERATORS.includes(node.cmp) ? 'No value needed' : 'Click "Use Subquery" to define'}
+              </span>
+            )
+          ) : isSubqueryOp && hasSubquery ? (
             <span className="flex-1 text-xs text-emerald-400 font-mono bg-dark-900 px-2 py-1 rounded truncate">
               (SELECT ...) [Subquery]
             </span>
@@ -249,9 +266,27 @@ function WhereNodeEditor({ node, path, tables, onUpdate, onRemove }: WhereNodeEd
               className="flex-1 bg-dark-700 border border-dark-600 rounded px-2 py-1 text-sm text-dark-200 focus:outline-none focus:border-primary-500 min-w-[120px]"
             />
           ) : (
-            <span className="flex-1 text-xs text-dark-500">
-              Click "Use Subquery" to define
-            </span>
+            <input
+              type="text"
+              value={node.value !== undefined && node.value !== null ? String(node.value) : ''}
+              placeholder="value"
+              onChange={(e) => {
+                let value: string | number = e.target.value;
+                if (selectedColumn && selectedColumn.columnType.toLowerCase().includes('int')) {
+                  const num = parseInt(e.target.value, 10);
+                  if (!isNaN(num)) {
+                    value = num;
+                  }
+                } else if (selectedColumn && (selectedColumn.columnType.toLowerCase().includes('decimal') || selectedColumn.columnType.toLowerCase().includes('numeric'))) {
+                  const num = parseFloat(e.target.value);
+                  if (!isNaN(num)) {
+                    value = num;
+                  }
+                }
+                onUpdate(path, { ...node, value });
+              }}
+              className="flex-1 bg-dark-700 border border-dark-600 rounded px-2 py-1 text-sm text-dark-200 focus:outline-none focus:border-primary-500 min-w-[120px]"
+            />
           )}
           <button
             onClick={() => onRemove(path)}

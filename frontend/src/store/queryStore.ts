@@ -1,11 +1,12 @@
 import { create } from 'zustand';
-import type { 
-  TableMetadata, TableNode, Join, SelectedField, WhereCondition, 
+import type {
+  TableMetadata, TableNode, Join, SelectedField, WhereCondition,
   Aggregation, QueryStructure, QueryResult, GeneratedSQL, WhereClause,
-  CTE, TabType, ResultViewMode, ChartConfig, SavedQuery, QueryHistoryItem, ExplainResult
+  CTE, TabType, ResultViewMode, ChartConfig, SavedQuery, QueryHistoryItem,
+  ExplainResult, OrderByItem
 } from '@/types';
-import { 
-  generateSQL, executeQuery, getSavedQueries, createSavedQuery, 
+import {
+  generateSQL, executeQuery, getSavedQueries, createSavedQuery,
   updateSavedQuery, deleteSavedQuery, shareQuery, getQueryHistory,
   explainQuery
 } from '@/services/api';
@@ -16,8 +17,11 @@ interface QueryState {
   joins: Join[];
   selectedFields: SelectedField[];
   where: WhereCondition | null;
+  having: WhereCondition | null;
   aggregations: Aggregation[];
+  orderBy: OrderByItem[];
   limit: number;
+  offset: number;
   ctes: CTE[];
   generatedSQL: GeneratedSQL | null;
   queryResult: QueryResult | null;
@@ -35,7 +39,7 @@ interface QueryState {
   isLoadingSaved: boolean;
   isLoadingHistory: boolean;
   currentSavedId: number | null;
-  
+
   setMetadata: (metadata: TableMetadata[]) => void;
   addTable: (table: TableNode) => void;
   removeTable: (tableId: string) => void;
@@ -47,36 +51,46 @@ interface QueryState {
   setWhere: (where: WhereCondition | null) => void;
   addWhereClause: (clause: WhereClause) => void;
   removeWhereClause: (clauseId: string) => void;
+  setHaving: (having: WhereCondition | null) => void;
+  addHavingClause: (clause: WhereClause) => void;
+  removeHavingClause: (clauseId: string) => void;
   addAggregation: (agg: Aggregation) => void;
   removeAggregation: (tableId: string, columnName: string) => void;
+  addOrderBy: (item: OrderByItem) => void;
+  removeOrderBy: (tableId: string, columnName: string) => void;
+  updateOrderByDirection: (tableId: string, columnName: string, direction: 'ASC' | 'DESC') => void;
   setLimit: (limit: number) => void;
+  setOffset: (offset: number) => void;
   generateSQL: () => Promise<void>;
   executeQuery: () => Promise<void>;
   clearAll: () => void;
   updateSuggestedJoins: () => void;
-  
+
   addCTE: (cte: CTE) => void;
   removeCTE: (cteId: string) => void;
   updateCTE: (cteId: string, cte: Partial<CTE>) => void;
-  
+
   setActiveTab: (tab: TabType) => void;
   setResultViewMode: (mode: ResultViewMode) => void;
   setChartConfig: (config: ChartConfig | null) => void;
-  
+
   loadSavedQueries: () => Promise<void>;
   saveQuery: (name: string, description?: string) => Promise<SavedQuery>;
   updateCurrentQuery: () => Promise<SavedQuery | null>;
   deleteQuery: (id: number) => Promise<void>;
   loadQuery: (query: SavedQuery) => void;
   shareCurrentQuery: (expiresInHours?: number) => Promise<{ token: string; url: string; expires_at?: string } | null>;
-  
+
   loadQueryHistory: () => Promise<void>;
   replayHistory: (item: QueryHistoryItem) => void;
-  
+
   runExplain: () => Promise<void>;
-  
+
   loadQueryStructure: (structure: QueryStructure) => void;
-  
+
+  setQueryResult: (result: QueryResult) => void;
+  setGeneratedSQL: (sql: GeneratedSQL) => void;
+
   getQueryStructure: () => QueryStructure;
 }
 
@@ -114,17 +128,17 @@ function calculateSuggestedJoins(
   joins: Join[]
 ): Join[] {
   const suggested: Join[] = [];
-  
+
   for (let i = 0; i < tables.length; i++) {
     for (let j = i + 1; j < tables.length; j++) {
       const table1 = tables[i];
       const table2 = tables[j];
-      
+
       const meta1 = metadata.find(m => m.name === table1.tableName);
       const meta2 = metadata.find(m => m.name === table2.tableName);
-      
+
       if (!meta1 || !meta2) continue;
-      
+
       const checkFK = (
         fkMeta: TableMetadata,
         fkTable: TableNode,
@@ -135,10 +149,10 @@ function calculateSuggestedJoins(
         for (const fk of fkMeta.foreignKeys) {
           if (fk.toTable === otherMeta.name) {
             const exists = joins.some(
-              j => (j.leftTableId === fkTable.id && j.rightTableId === otherTable.id && 
+              j => (j.leftTableId === fkTable.id && j.rightTableId === otherTable.id &&
                     j.leftColumn === fk.fromColumn && j.rightColumn === fk.toColumn) ||
-                     (j.leftTableId === otherTable.id && j.rightTableId === fkTable.id &&
-                      j.leftColumn === fk.toColumn && j.rightColumn === fk.fromColumn)
+                   (j.leftTableId === otherTable.id && j.rightTableId === fkTable.id &&
+                    j.leftColumn === fk.toColumn && j.rightColumn === fk.fromColumn)
             );
             if (!exists) {
               const joinId = `suggested-${fkTable.id}-${otherTable.id}-${fk.fromColumn}-${fk.toColumn}`;
@@ -156,12 +170,12 @@ function calculateSuggestedJoins(
           }
         }
       };
-      
+
       checkFK(meta1, table1, meta2, table2, false);
       checkFK(meta2, table2, meta1, table1, true);
     }
   }
-  
+
   return suggested;
 }
 
@@ -171,8 +185,11 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   joins: [],
   selectedFields: [],
   where: null,
+  having: null,
   aggregations: [],
+  orderBy: [],
   limit: 100,
+  offset: 0,
   ctes: [],
   generatedSQL: null,
   queryResult: null,
@@ -219,13 +236,14 @@ export const useQueryStore = create<QueryState>((set, get) => ({
         joins: state.joins.filter(j => j.leftTableId !== tableId && j.rightTableId !== tableId),
         selectedFields: state.selectedFields.filter(f => f.tableId !== tableId),
         aggregations: state.aggregations.filter(a => a.tableId !== tableId),
+        orderBy: state.orderBy.filter(o => o.tableId !== tableId),
       };
     });
     get().updateSuggestedJoins();
   },
 
   updateTablePosition: (tableId, position) => set((state) => ({
-    tables: state.tables.map(t => 
+    tables: state.tables.map(t =>
       t.id === tableId ? { ...t, position } : t
     ),
   })),
@@ -245,7 +263,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   },
 
   updateJoinType: (joinId, type) => set((state) => ({
-    joins: state.joins.map(j => 
+    joins: state.joins.map(j =>
       j.id === joinId ? { ...j, type } : j
     ),
   })),
@@ -262,6 +280,9 @@ export const useQueryStore = create<QueryState>((set, get) => ({
         ),
         aggregations: state.aggregations.filter(
           a => !(a.tableId === tableId && a.columnName === columnName)
+        ),
+        orderBy: state.orderBy.filter(
+          o => !(o.tableId === tableId && o.columnName === columnName)
         ),
       };
     }
@@ -301,6 +322,40 @@ export const useQueryStore = create<QueryState>((set, get) => ({
     return { where: result };
   }),
 
+  setHaving: (having) => set({ having }),
+
+  addHavingClause: (clause) => set((state) => {
+    if (!state.having) {
+      return {
+        having: {
+          id: generateId(),
+          op: 'AND',
+          children: [clause],
+        },
+      };
+    }
+
+    const addToCondition = (cond: WhereCondition): WhereCondition => {
+      if (cond.children.length === 0 || !('op' in cond.children[0])) {
+        return {
+          ...cond,
+          children: [...cond.children, clause],
+        };
+      }
+      return cond;
+    };
+
+    return {
+      having: addToCondition(state.having),
+    };
+  }),
+
+  removeHavingClause: (clauseId) => set((state) => {
+    if (!state.having) return {};
+    const result = removeWhereNode(state.having, clauseId);
+    return { having: result };
+  }),
+
   addAggregation: (agg) => set((state) => {
     const exists = state.aggregations.find(
       a => a.tableId === agg.tableId && a.columnName === agg.columnName
@@ -323,7 +378,28 @@ export const useQueryStore = create<QueryState>((set, get) => ({
     ),
   })),
 
+  addOrderBy: (item) => set((state) => {
+    const exists = state.orderBy.find(
+      o => o.tableId === item.tableId && o.columnName === item.columnName
+    );
+    if (exists) return {};
+    return { orderBy: [...state.orderBy, item] };
+  }),
+
+  removeOrderBy: (tableId, columnName) => set((state) => ({
+    orderBy: state.orderBy.filter(
+      o => !(o.tableId === tableId && o.columnName === columnName)
+    ),
+  })),
+
+  updateOrderByDirection: (tableId, columnName, direction) => set((state) => ({
+    orderBy: state.orderBy.map(o =>
+      o.tableId === tableId && o.columnName === columnName ? { ...o, direction } : o
+    ),
+  })),
+
   setLimit: (limit) => set({ limit }),
+  setOffset: (offset) => set({ offset }),
 
   generateSQL: async () => {
     const state = get();
@@ -339,15 +415,18 @@ export const useQueryStore = create<QueryState>((set, get) => ({
         joins: state.joins,
         selectedFields: state.selectedFields,
         where: state.where,
+        having: state.having,
         aggregations: state.aggregations,
+        orderBy: state.orderBy,
         limit: state.limit,
+        offset: state.offset > 0 ? state.offset : undefined,
         ctes: state.ctes.length > 0 ? state.ctes : undefined,
       };
       const result = await generateSQL(queryStructure);
       set({ generatedSQL: result, isGenerating: false });
     } catch (err) {
-      set({ 
-        error: err instanceof Error ? err.message : 'Failed to generate SQL', 
+      set({
+        error: err instanceof Error ? err.message : 'Failed to generate SQL',
         isGenerating: false,
         generatedSQL: null,
       });
@@ -368,15 +447,18 @@ export const useQueryStore = create<QueryState>((set, get) => ({
         joins: state.joins,
         selectedFields: state.selectedFields,
         where: state.where,
+        having: state.having,
         aggregations: state.aggregations,
+        orderBy: state.orderBy,
         limit: state.limit,
+        offset: state.offset > 0 ? state.offset : undefined,
         ctes: state.ctes.length > 0 ? state.ctes : undefined,
       };
       const result = await executeQuery(queryStructure);
       set({ queryResult: result, isExecuting: false });
     } catch (err) {
-      set({ 
-        error: err instanceof Error ? err.message : 'Failed to execute query', 
+      set({
+        error: err instanceof Error ? err.message : 'Failed to execute query',
         isExecuting: false,
         queryResult: null,
       });
@@ -389,7 +471,11 @@ export const useQueryStore = create<QueryState>((set, get) => ({
       joins: [],
       selectedFields: [],
       where: null,
+      having: null,
       aggregations: [],
+      orderBy: [],
+      limit: 100,
+      offset: 0,
       ctes: [],
       generatedSQL: null,
       queryResult: null,
@@ -439,7 +525,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
       const queries = await getSavedQueries();
       set({ savedQueries: queries, isLoadingSaved: false });
     } catch (err) {
-      set({ 
+      set({
         error: err instanceof Error ? err.message : 'Failed to load saved queries',
         isLoadingSaved: false,
       });
@@ -453,8 +539,11 @@ export const useQueryStore = create<QueryState>((set, get) => ({
       joins: state.joins,
       selectedFields: state.selectedFields,
       where: state.where,
+      having: state.having,
       aggregations: state.aggregations,
+      orderBy: state.orderBy,
       limit: state.limit,
+      offset: state.offset > 0 ? state.offset : undefined,
       ctes: state.ctes.length > 0 ? state.ctes : undefined,
     };
     const saved = await createSavedQuery({
@@ -471,14 +560,17 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   updateCurrentQuery: async () => {
     const state = get();
     if (!state.currentSavedId) return null;
-    
+
     const queryStructure: QueryStructure = {
       tables: state.tables,
       joins: state.joins,
       selectedFields: state.selectedFields,
       where: state.where,
+      having: state.having,
       aggregations: state.aggregations,
+      orderBy: state.orderBy,
       limit: state.limit,
+      offset: state.offset > 0 ? state.offset : undefined,
       ctes: state.ctes.length > 0 ? state.ctes : undefined,
     };
     const updated = await updateSavedQuery(state.currentSavedId, {
@@ -504,8 +596,11 @@ export const useQueryStore = create<QueryState>((set, get) => ({
       joins: structure.joins || [],
       selectedFields: structure.selectedFields || [],
       where: structure.where || null,
+      having: structure.having || null,
       aggregations: structure.aggregations || [],
+      orderBy: structure.orderBy || [],
       limit: structure.limit || 100,
+      offset: structure.offset || 0,
       ctes: structure.ctes || [],
       chartConfig: query.chart_config || null,
       currentSavedId: query.id,
@@ -527,7 +622,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
       const history = await getQueryHistory();
       set({ queryHistory: history, isLoadingHistory: false });
     } catch (err) {
-      set({ 
+      set({
         error: err instanceof Error ? err.message : 'Failed to load query history',
         isLoadingHistory: false,
       });
@@ -541,8 +636,11 @@ export const useQueryStore = create<QueryState>((set, get) => ({
       joins: structure.joins || [],
       selectedFields: structure.selectedFields || [],
       where: structure.where || null,
+      having: structure.having || null,
       aggregations: structure.aggregations || [],
+      orderBy: structure.orderBy || [],
       limit: structure.limit || 100,
+      offset: structure.offset || 0,
       ctes: structure.ctes || [],
       currentSavedId: null,
       queryResult: null,
@@ -566,15 +664,18 @@ export const useQueryStore = create<QueryState>((set, get) => ({
         joins: state.joins,
         selectedFields: state.selectedFields,
         where: state.where,
+        having: state.having,
         aggregations: state.aggregations,
+        orderBy: state.orderBy,
         limit: state.limit,
+        offset: state.offset > 0 ? state.offset : undefined,
         ctes: state.ctes.length > 0 ? state.ctes : undefined,
       };
       const result = await explainQuery(queryStructure);
       set({ explainResult: result, isExplaining: false, activeTab: 'plan' });
     } catch (err) {
-      set({ 
-        error: err instanceof Error ? err.message : 'Failed to explain query', 
+      set({
+        error: err instanceof Error ? err.message : 'Failed to explain query',
         isExplaining: false,
       });
     }
@@ -586,8 +687,11 @@ export const useQueryStore = create<QueryState>((set, get) => ({
       joins: structure.joins || [],
       selectedFields: structure.selectedFields || [],
       where: structure.where || null,
+      having: structure.having || null,
       aggregations: structure.aggregations || [],
+      orderBy: structure.orderBy || [],
       limit: structure.limit || 100,
+      offset: structure.offset || 0,
       ctes: structure.ctes || [],
       currentSavedId: null,
       queryResult: null,
@@ -603,9 +707,25 @@ export const useQueryStore = create<QueryState>((set, get) => ({
       joins: state.joins,
       selectedFields: state.selectedFields,
       where: state.where,
+      having: state.having,
       aggregations: state.aggregations,
+      orderBy: state.orderBy,
       limit: state.limit,
+      offset: state.offset > 0 ? state.offset : undefined,
       ctes: state.ctes.length > 0 ? state.ctes : undefined,
     };
+  },
+
+  setQueryResult: (result) => {
+    set({
+      queryResult: result,
+      generatedSQL: result.sql && result.params
+        ? { sql: result.sql, params: result.params }
+        : get().generatedSQL,
+    });
+  },
+
+  setGeneratedSQL: (sql) => {
+    set({ generatedSQL: sql });
   },
 }));
